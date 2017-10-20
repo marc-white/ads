@@ -5,14 +5,13 @@ Interface to the adsws search api.
 import warnings
 import six
 import math
-from werkzeug.utils import cached_property
-import json
 
 from .config import SEARCH_URL
 from .exceptions import SolrResponseParseError, APIResponseError
 from .base import BaseQuery, APIResponse
 from .metrics import MetricsQuery
 from .export import ExportQuery
+from .utils import cached_property
 
 
 class Article(object):
@@ -24,11 +23,11 @@ class Article(object):
     # Article.metrics, this class has dependencies on search.py and other core
     # services; this is why it is currently impossible for it to live in
     # base.py, which is the most logical place for it.
+
     def __init__(self, **kwargs):
         """
         :param kwargs: Set object attributes from kwargs
         """
-
         self._raw = kwargs
         for key, value in six.iteritems(kwargs):
             setattr(self, key, value)
@@ -40,20 +39,20 @@ class Article(object):
 
     def __unicode__(self):
         author = self.first_author or "Unknown author"
-        if self.author and len(self.author) > 1:
+
+        if len(self.author or []) > 1:
             author += " et al."
 
         return u"<{author} {year}, {bibcode}>".format(
             author=author,
-            year=self.year,
-            bibcode=self.bibcode,
+            year=self.year or "Unknown year",
+            bibcode=self.bibcode or "Unknown bibcode"
         )
 
     def __eq__(self, other):
-        if (not hasattr(self, 'bibcode') or not hasattr(other, 'bibcode') or
-                self.bibcode is None or other.bibcode is None):
+        if self._raw.get("bibcode") is None or other._raw.get("bibcode") is None:
             raise TypeError("Cannot compare articles without bibcodes")
-        return self.bibcode == other.bibcode
+        return self._raw['bibcode'] == other._raw['bibcode']
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -121,7 +120,13 @@ class Article(object):
         # If the requested field is not present in the returning Solr doc,
         # return None instead of hitting _get_field again.
         if field not in sq._raw:
-            return None
+            # These fields will never be in the result solr document;
+            # pass through to __getattribute__ to allow the relevant
+            # secondary service queries
+            if field in ["reference", "citation", "metrics", "bibtex"]:
+                pass
+            else:
+                return None
         value = sq.__getattribute__(field)
         self._raw[field] = value
         return value
@@ -131,8 +136,24 @@ class Article(object):
         return self._get_field('abstract')
 
     @cached_property
+    def ack(self):
+        return self._get_field('ack')
+
+    @cached_property
     def aff(self):
         return self._get_field('aff')
+
+    @cached_property
+    def alternate_bibcode(self):
+        return self._get_field('alternate_bibcode')
+
+    @cached_property
+    def alternate_title(self):
+        return self._get_field('alternate_title')
+
+    @cached_property
+    def arxiv_class(self):
+        return self._get_field('arxiv_class')
 
     @cached_property
     def author(self):
@@ -143,20 +164,48 @@ class Article(object):
         return self._get_field('citation_count')
 
     @cached_property
-    def bibstem(self):
-        return self._get_field('bibstem')
+    def bibcode(self):
+        return self._get_field('bibcode')
+
+    @cached_property
+    def bibgroup(self):
+        return self._get_field('bibgroup')
+
+    @cached_property
+    def copyright(self):
+        return self._get_field('copyright')
+
+    @cached_property
+    def data(self):
+        return self._get_field('data')
 
     @cached_property
     def database(self):
         return self._get_field('database')
 
     @cached_property
+    def doctype(self):
+        return self._get_field('doctype')
+
+    @cached_property
+    def doi(self):
+        return self._get_field('doi')
+
+    @cached_property
     def identifier(self):
         return self._get_field('identifier')
 
     @cached_property
-    def first_author_norm(self):
-        return self._get_field('first_author_norm')
+    def indexstamp(self):
+        return self._get_field('indexstamp')
+
+    @cached_property
+    def first_author(self):
+        return self._get_field('first_author')
+
+    @cached_property
+    def grant(self):
+        return self._get_field('grant')
 
     @cached_property
     def issue(self):
@@ -188,15 +237,27 @@ class Article(object):
 
     @cached_property
     def reference(self):
-        return self._get_field('reference')
+        q = SearchQuery(
+            q='references(id:{})'.format(self.id),
+            fl=['id', 'bibcode']
+        )
+        return [a.bibcode for a in q]
 
     @cached_property
     def citation(self):
-        return self._get_field('citation')
+        q = SearchQuery(
+            q='citations(id:{})'.format(self.id),
+            fl=['id', 'bibcode']
+        )
+        return [a.bibcode for a in q]
 
     @cached_property
     def title(self):
         return self._get_field('title')
+
+    @cached_property
+    def vizier(self):
+        return self._get_field('vizier')
 
     @cached_property
     def volume(self):
@@ -205,14 +266,33 @@ class Article(object):
     @cached_property
     def year(self):
         return self._get_field('year')
-
+    
+    @cached_property
+    def orcid_pub(self):
+        """ORCiD identifiers assigned by publishers"""
+        return self._get_field('orcid_pub')
+    
+    @cached_property
+    def orcid_user(self):
+        """ORCiD claims by ADS verified users."""
+        return self._get_field('orcid_user')
+    
+    @cached_property
+    def orcid_other(self):
+        """ORCiD claims by everybody else."""
+        return self._get_field('orcid_other')
+    
     @cached_property
     def metrics(self):
+        warnings.warn("metrics should be queried with ads.MetricsQuery(); You will"
+                      "hit API ratelimits very quickly otherwise.", UserWarning)
         return MetricsQuery(bibcodes=self.bibcode).execute()
 
     @cached_property
     def bibtex(self):
         """Return a BiBTeX entry for the current article."""
+        warnings.warn("bibtex should be queried with ads.ExportQuery(); You will "
+                      "hit API ratelimits very quickly otherwise.", UserWarning)
         return ExportQuery(bibcodes=self.bibcode, format="bibtex").execute()
 
 
@@ -221,18 +301,21 @@ class SolrResponse(APIResponse):
     Base class for storing a solr response
     """
 
-    def __init__(self, raw):
+    def __init__(self, http_response):
         """
         De-serialize a json string representing a solr response
-        :param raw: complete json response from solr
-        :type raw: basestring
+        :param http_response: complete json response from solr
+        :type http_response: request.response
         """
-        self._raw = raw
-        self.json = json.loads(raw)
+        self._raw = http_response.text
+        self.json = http_response.json()
         self._articles = None
         try:
             self.responseHeader = self.json['responseHeader']
             self.params = self.json['responseHeader']['params']
+            self.fl = self.params.get('fl', [])
+            if isinstance(self.fl, six.string_types):
+                self.fl = self.fl.split(',')
             self.response = self.json['response']
             self.numFound = self.response['numFound']
             self.docs = self.response['docs']
@@ -247,6 +330,10 @@ class SolrResponse(APIResponse):
         if self._articles is None:
             self._articles = []
             for doc in self.docs:
+                # ensure all fields in the "fl" are in the doc to address
+                # issue #38
+                for k in set(self.fl).difference(doc.keys()):
+                    doc[k] = None
                 self._articles.append(Article(**doc))
         return self._articles
 
@@ -257,12 +344,16 @@ class SearchQuery(BaseQuery):
     """
     HTTP_ENDPOINT = SEARCH_URL
     DEFAULT_FIELDS = ["author", "first_author", "bibcode", "id", "year",
-                      "title", "reference", "citation"]
+                      "title"]
+    HIGHLIGHT_FIELDS = ["abstract", "title", "body", "ack", "aff", "author"]
 
     def __init__(self, query_dict=None, q=None, fq=None, fl=DEFAULT_FIELDS,
-                 sort=None, start=0, rows=50, max_pages=3, **kwargs):
+                 sort=None, cursorMark=None, start=None, rows=50, max_pages=1,
+                 token=None, hl=None, **kwargs):
         """
-        constructor
+        The constructor is designed to set valid and useful
+        query params with potentially sparsely/selectively defined arguments
+
         :param query_dict: raw query that will be sent unmodified. raw takes
             precedence over individually defined query params
         :type query_dict: dict
@@ -270,43 +361,93 @@ class SearchQuery(BaseQuery):
         :param fq: solr "fq" param (filter query)
         :param fl: solr "fl" param (filter limit)
         :param sort: solr "sort" param (sort)
-        :param start: solr "start" param (start)
+        :param cursorMark: solr "cursorMark" param
+        :param start: solr "start" param (start) (discouraged; use cursorMark)
         :param rows: solr "rows" param (rows)
         :param max_pages: Maximum number of pages to return. This value may
-            be modified after instansiation to increase the number of results
+            be modified after instantiation to increase the number of results
+        :param token: optional API token to use for this searchquery
+        :param hl: specify the type of highlights to return, 
+                   ['abstract', 'title', 'body']
         :param kwargs: kwargs to add to `q` as "key:value"
         """
         self._articles = []
+        self._highlights = {}
         self.response = None  # current SolrResponse object
         self.max_pages = max_pages
         self.__iter_counter = 0  # Counter for our custom iterator method
+
         if query_dict is not None:
             query_dict.setdefault('rows', 50)
-            query_dict.setdefault('start', 0)
+            query_dict.setdefault('cursorMark', '*')
+            query_dict.setdefault('sort', 'score desc,id desc')
             self._query = query_dict
         else:
-            if sort is not None:
+            if start is None and cursorMark is None:
+                cursorMark = "*"
+            if sort is None and start is None:
+                sort = "score desc,id desc"
+            elif sort is None and start is not None:
+                sort = "score desc"
+            else:
+                sort = sort.replace("+", " ")
                 sort = sort if " " in sort else "{} desc".format(sort)
+                # cursors require unique field in the sort
+                if "id" not in sort and start is None:
+                    sort = "{},id desc".format(sort)
+            if hl is not None:
+                hl_fl = list(set(hl))
+                for i in hl_fl:
+                    if i not in self.HIGHLIGHT_FIELDS:
+                        raise Exception('Highlights can only be used for: {}'
+                                        .format(self.HIGHLIGHT_FIELDS))
+                hl = "true"
+            else:
+                hl_fl = None
+
             _ = {
                 "q": q or '',
                 "fq": fq,
                 "fl": fl,
+                "hl": hl,
+                "hl.fl": hl_fl,
                 "sort": sort,
                 "start": start,
-                "rows": rows,
+                "cursorMark": cursorMark,
+                "rows": int(rows),
             }
             # Filter out None values
             self._query = dict(
                 (k, v) for k, v in six.iteritems(_) if v is not None
             )
 
+            # Include `id` as a field, always (could be None, string or list)
+            self._query.setdefault("fl", ["id"])
+            if isinstance(self._query["fl"], six.string_types):
+                _ = map(str.strip, self._query["fl"].split(","))
+                self._query["fl"] = ["id"] + list(_)
+            else:
+                self._query["fl"] = ["id"] + self._query["fl"]
+
+            # remove bibtex and metrics as a safeguard against
+            # https://github.com/andycasey/ads/issues/73
+            for field in ["bibtex", "metrics"]:
+                if field in self._query["fl"]:
+                    self.query["fl"].remove(field)
+
             # Format and add kwarg (key, value) pairs to q
             if kwargs:
-                _ = ['{}:"{}"'.format(k, v) for k, v in six.iteritems(kwargs)]
-                self._query['q'] = '{} {}'.format(self._query['q'], ' '.join(_))
+                _ = [u'{}:"{}"'.format(k, v) for k, v in six.iteritems(kwargs)]
+                self._query['q'] = u'{} {}'.format(self._query['q'], ' '.join(_))
 
         assert self._query.get('rows') > 0, "rows must be greater than 0"
         assert self._query.get('q'), "q must not be empty"
+        assert self._query.get('cursorMark') is None or \
+            self._query.get('start') is None, \
+            "cursorMark and start are mutually exclusive parameters"
+
+        if token is not None:
+            self.token = token
 
     @property
     def articles(self):
@@ -336,6 +477,14 @@ class SearchQuery(BaseQuery):
         """
         return self._query
 
+    def highlights(self, article):
+        """
+        Return highlights for a given article
+        :param article: ads.Article
+        :return: list
+        """
+        return self._highlights.get(article.id, {})
+
     def __iter__(self):
         return self
 
@@ -362,7 +511,7 @@ class SearchQuery(BaseQuery):
 
             # if we have hit the max_pages limit, then iteration is done.
             page = math.ceil(len(self.articles)/self.query['rows'])
-            if page > self.max_pages:
+            if page >= self.max_pages:
                 raise StopIteration("Maximum number of pages queried")
 
             # We aren't on the max_page of results nor do we have all
@@ -383,8 +532,24 @@ class SearchQuery(BaseQuery):
         self.response = SolrResponse.load_http_response(
             self.session.get(self.HTTP_ENDPOINT, params=self.query)
         )
+
+        # ADS will apply a ceiling to 'rows' and re-write the query
+        # This code checks if that happened by comparing the reponse
+        # "rows" with what we sent in our query
+        # references https://github.com/andycasey/ads/issues/45
+        recv_rows = int(self.response.responseHeader.get("params", {}).get("rows"))
+        if recv_rows != self.query.get("rows"):
+            self._query['rows'] = recv_rows
+            warnings.warn("Response rows did not match input rows. "
+                          "Setting this query's rows to {}".format(self.query['rows']))
+
         self._articles.extend(self.response.articles)
-        self._query['start'] += self._query['rows']
+        if self._query.get('start') is not None:
+            self._query['start'] += self._query['rows']
+        elif self._query.get('cursorMark') is not None:
+            self._query['cursorMark'] = self.response.json.get("nextCursorMark")
+
+        self._highlights.update(self.response.json.get("highlighting", {}))
 
 
 class query(SearchQuery):

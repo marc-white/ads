@@ -4,6 +4,7 @@ Base classes for the ads client
 
 import requests
 import warnings
+import json
 import os
 
 from .exceptions import APIResponseError
@@ -12,33 +13,90 @@ from . import __version__
 import ads.config  # For manually setting the token
 
 
+class _Singleton(type):
+    _instances = {}
+
+    def __call__(cls, name, *args, **kwargs):
+        if name not in cls._instances:
+            cls._instances[name] = super(_Singleton, cls).__call__(name, *args, **kwargs)
+        return cls._instances[name]
+
+    @classmethod
+    def get_info(cls):
+        """
+        Print all of the instantiated Singletons
+        """
+        return '\n'.join(
+            [str(cls._instances[key]) for key in cls._instances]
+        )
+
+
+class Singleton(_Singleton('SingletonMeta', (object,), {})):
+    """
+    Wrapper class so that the Singleton metaclass works for both Python 2&3
+    """
+    pass
+
+
+class RateLimits(Singleton):
+    response_to_query = {
+            'SolrResponse': 'SearchQuery',
+            'MetricsResponse': 'MetricsQuery',
+            'ExportResponse': 'ExportQuery'
+        }
+
+    def __init__(self, name):
+        self.limits = {}
+        self.name = self.response_to_query.get(name, name)
+
+    @classmethod
+    def getRateLimits(cls, name):
+        return cls(cls.response_to_query.get(name, name))
+
+    def set(self, headers):
+        self.limits = {
+            'limit': headers.get('x-ratelimit-limit', ''),
+            'remaining': headers.get('x-ratelimit-remaining', ''),
+            'reset': headers.get('x-ratelimit-reset', '')
+        }
+
+    def to_dict(self):
+        return self.limits
+
+    def __str__(self):
+        return '{}: {}'.format(
+            self.name,
+            json.dumps(self.limits)
+        )
+
+
 class APIResponse(object):
     """
     Represents an adsws-api http response
     """
     response = None
 
-    def get_ratelimits(self):
+    @classmethod
+    def get_ratelimits(cls):
         """
         Return the current, maximum, and reset rate limits from the response
         header as a dictionary. The values will be strings.
         """
-        return {
-            "limit": self.response.headers.get('X-RateLimit-Limit'),
-            "remaining": self.response.headers.get('X-RateLimit-Remaining'),
-            "reset": self.response.headers.get('X-RateLimit-Reset')
-        }
+        return RateLimits.getRateLimits(cls.__name__).to_dict()
 
     @classmethod
-    def load_http_response(cls, HTTPResponse):
+    def load_http_response(cls, http_response):
         """
-        This method should return an instansitated class and set its response
+        This method should return an instantiated class and set its response
         to the requests.Response object.
         """
-        if not HTTPResponse.ok:
-            raise APIResponseError(HTTPResponse.text)
-        c = cls(HTTPResponse.text)
-        c.response = HTTPResponse
+        if not http_response.ok:
+            raise APIResponseError(http_response.text)
+        c = cls(http_response)
+        c.response = http_response
+
+        RateLimits.getRateLimits(cls.__name__).set(c.response.headers)
+
         return c
 
 

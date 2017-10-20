@@ -27,10 +27,30 @@ class HTTPrettyMock(object):
         HTTPretty.disable()
 
 
+class MockResponse(object):
+    """
+    mock for a simple response with a given body
+    """
+    def __init__(self, body):
+        self.text = body
+
+    def json(self):
+        return json.loads(self.text)
+
+
 class MockApiResponse(HTTPrettyMock):
     """
     context manager than mocks an static adsws-api response
     """
+    limit = 400
+    remaining = 398
+    reset = 1436313600
+
+    @property
+    def remains(self):
+        MockApiResponse.remaining -= 1
+        return MockApiResponse.remaining
+
     def __init__(self, api_endpoint):
         self.api_endpoint = api_endpoint
 
@@ -40,9 +60,9 @@ class MockApiResponse(HTTPrettyMock):
             body='''{"status": "online", "app": "adsws.api"}''',
             content_type="application/json",
             adding_headers={
-                'X-RateLimit-Limit': 400,
-                'X-RateLimit-Remaining': 397,
-                'X-RateLimit-Reset': 1436313600
+                'X-RateLimit-Limit': MockApiResponse.limit,
+                'X-RateLimit-Remaining': self.remains,
+                'X-RateLimit-Reset': MockApiResponse.reset
             }
         )
 
@@ -74,11 +94,13 @@ class MockSolrResponse(HTTPrettyMock):
                     'rows', [len(resp['response']['docs'])]
                 )[0]
             )
+            rows = min(rows, 300)
             start = int(request.querystring.get('start', [0])[0])
             try:
                 resp['response']['docs'] = resp['response']['docs'][start:start+rows]
             except IndexError:
                 resp['response']['docs'] = resp['response']['docs'][start:]
+            resp['responseHeader']['params']['rows'] = rows
 
             # Mimic the filter "fl" behaviour
             fl = request.querystring.get('fl', ['id'])
@@ -86,6 +108,11 @@ class MockSolrResponse(HTTPrettyMock):
                 {field: doc.get(field) for field in fl}
                 for doc in resp['response']['docs']
             ]
+            resp['responseHeader']['params']['fl'] = fl
+
+            # Mimic cursor behavior if specified
+            if request.querystring.get('cursorMark'):
+                resp['nextCursorMark'] = "AoIH///3RmWrhAAjMTY0"
 
             return 200, headers, json.dumps(resp)
 

@@ -34,12 +34,12 @@ setup(name="ads",
       version=version,
       author="Andrew R. Casey",
       author_email="andy@astrowizici.st",
-      packages=["ads"],
+      packages=["ads", "ads.tests", "ads.tests.stubdata"],
       url="http://www.github.com/andycasey/ads/",
       license="MIT",
       description="A Python module for NASA's ADS that doesn't suck.",
       long_description=\
-          readfile(os.path.join(os.path.dirname(__file__), "README.md")),
+          readfile(os.path.join(os.path.dirname(__file__), "README.rst")),
       install_requires=\
           readfile(os.path.join(os.path.dirname(__file__), "requirements.txt"))
      )
